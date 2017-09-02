@@ -5,7 +5,7 @@
 # is located at
 #
 #     http://aws.amazon.com/apache2.0/
-# 
+#
 # or in the "license" file accompanying this file. This file is distributed on
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 # express or implied. See the License for the specific language governing
@@ -16,8 +16,9 @@ import logging
 import os
 import pickle
 from collections import Counter
+from contextlib import ExitStack
 from itertools import chain, islice
-from typing import Dict, Iterable, Mapping
+from typing import Dict, Iterable, List, Mapping
 
 import sockeye.constants as C
 from sockeye.data_io import get_tokens, smart_open
@@ -25,20 +26,21 @@ from sockeye.data_io import get_tokens, smart_open
 logger = logging.getLogger(__name__)
 
 
-def build_from_path(path: str, num_words: int = 50000, min_count: int = 1) -> Dict[str, int]:
+def build_from_paths(paths: List[str], num_words: int = 50000, min_count: int = 1) -> Dict[str, int]:
     """
-    Creates vocabulary from path to a file in sentence-per-line format. A sentence is just a whitespace delimited
+    Creates vocabulary from paths to a file in sentence-per-line format. A sentence is just a whitespace delimited
     list of tokens. Note that special symbols like the beginning of sentence (BOS) symbol will be added to the
     vocabulary.
-    
-    :param path: Path to file with one sentence per line.
+
+    :param paths: List of paths to files with one sentence per line.
     :param num_words: Maximum number of words in the vocabulary.
     :param min_count: Minimum occurrences of words to be included in the vocabulary.
     :return: Word-to-id mapping.
     """
-    with smart_open(path) as data:
-        logger.info("Building vocabulary from dataset: %s", path)
-        return build_vocab(data, num_words, min_count)
+    with ExitStack() as stack:
+        logger.info("Building vocabulary from dataset(s): %s", paths)
+        files = (stack.enter_context(smart_open(path)) for path in paths)
+        return build_vocab(chain(*files), num_words, min_count)
 
 
 def build_vocab(data: Iterable[str], num_words: int = 50000, min_count: int = 1) -> Dict[str, int]:
@@ -93,7 +95,7 @@ def vocab_to_json(vocab: Mapping, path: str):
     :param path: Output file path.
     """
     with open(path, "w") as out:
-        json.dump(vocab, out, indent=4)
+        json.dump(vocab, out, indent=4, ensure_ascii=False)
         logger.info('Vocabulary saved to "%s"', path)
 
 

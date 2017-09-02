@@ -5,7 +5,7 @@
 # is located at
 #
 #     http://aws.amazon.com/apache2.0/
-# 
+#
 # or in the "license" file accompanying this file. This file is distributed on
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 # express or implied. See the License for the specific language governing
@@ -26,6 +26,7 @@ import sockeye.inference
 import sockeye.output_handler
 from sockeye import constants as C
 from sockeye.data_io import smart_open
+from sockeye.utils import check_condition
 
 logger = logging.getLogger(__name__)
 
@@ -49,16 +50,18 @@ class CheckpointDecoder:
                  references: str,
                  model: str,
                  max_input_len: int,
-                 beam_size=C.DEFAULT_BEAM_SIZE,
+                 beam_size: int = C.DEFAULT_BEAM_SIZE,
+                 max_output_length_num_stds: int = C.DEFAULT_NUM_STD_MAX_OUTPUT_LENGTH,
                  limit: int = -1) -> None:
         self.context = context
         self.max_input_len = max_input_len
+        self.max_output_length_num_stds = max_output_length_num_stds
         self.beam_size = beam_size
         self.model = model
         with smart_open(inputs) as inputs_fin, smart_open(references) as references_fin:
             input_sentences = inputs_fin.readlines()
             target_sentences = references_fin.readlines()
-            assert len(input_sentences) == len(target_sentences), "Number of sentence pairs do not match"
+            check_condition(len(input_sentences) == len(target_sentences), "Number of sentence pairs do not match")
             if limit <= 0:
                 limit = len(input_sentences)
             if limit < len(input_sentences):
@@ -86,7 +89,14 @@ class CheckpointDecoder:
         :param checkpoint: Checkpoint to load parameters from.
         :return: Mapping of metric names to scores.
         """
-        translator = sockeye.inference.Translator(self.context, 'linear',
+        ensemble_mode = 'linear'
+        bucket_source_width = 10
+        bucket_target_width = 10
+        translator = sockeye.inference.Translator(self.context,
+                                                  ensemble_mode,
+                                                  bucket_source_width,
+                                                  bucket_target_width,
+                                                  sockeye.inference.LengthPenalty(),
                                                   *sockeye.inference.load_models(self.context,
                                                                                  self.max_input_len,
                                                                                  self.beam_size,

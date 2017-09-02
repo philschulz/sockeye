@@ -5,7 +5,7 @@
 # is located at
 #
 #     http://aws.amazon.com/apache2.0/
-# 
+#
 # or in the "license" file accompanying this file. This file is distributed on
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 # express or implied. See the License for the specific language governing
@@ -30,19 +30,88 @@ from typing import Mapping, NamedTuple, Any, List, Iterator, Tuple, Dict, Option
 import mxnet as mx
 import numpy as np
 
+from sockeye import __version__
+import sockeye.constants as C
+
 logger = logging.getLogger(__name__)
+
+
+class SockeyeError(Exception):
+    pass
+
+
+def check_version(version: str):
+    """
+    Checks given version against code version and determines compatibility.
+    Throws if versions are incompatible.
+
+    :param version: Given version.
+    """
+    code_version = parse_version(__version__)
+    given_version = parse_version(version)
+    check_condition(code_version[0] == given_version[0],
+                    "Given release version (%s) does not match release code version (%s)" % (version, __version__))
+    check_condition(code_version[1] == given_version[1],
+                    "Given major version (%s) does not match major code version (%s)" % (version, __version__))
+
+
+def load_version(fname: str) -> str:
+    """
+    Loads version from file.
+
+    :param fname: Name of file to load version from.
+    :return: Version string.
+    """
+    if not os.path.exists(fname):
+        logger.warning("No version file found. Defaulting to 1.0.3")
+        return "1.0.3"
+    with open(fname) as inp:
+        return inp.read().strip()
+
+
+def parse_version(version_string: str) -> Tuple[str, str, str]:
+    """
+    Parse version string into release, major, minor version.
+
+    :param version_string: Version string.
+    :return: Tuple of strings.
+    """
+    release, major, minor = version_string.split(".", 2)
+    return release, major, minor
+
+
+def check_condition(condition: bool, error_message: str):
+    """
+    Check the condition and if it is not met, exit with the given error message
+    and error_code, similar to assertions.
+
+    :param condition: Condition to check.
+    :param error_message: Error message to show to the user.
+    """
+    if not condition:
+        raise SockeyeError(error_message)
 
 
 def save_graph(symbol: mx.sym.Symbol, filename: str, hide_weights: bool = True):
     """
     Dumps computation graph visualization to .pdf and .dot file.
-    
+
     :param symbol: The symbol representing the computation graph.
     :param filename: The filename to save the graphic to.
     :param hide_weights: If true the weights will not be shown.
     """
     dot = mx.viz.plot_network(symbol, hide_weights=hide_weights)
     dot.render(filename=filename)
+
+
+def compute_lengths(sequence_data: mx.sym.Symbol) -> mx.sym.Symbol:
+    """
+    Computes sequence lenghts of PAD_ID-padded data in sequence_data.
+
+    :param sequence_data: Input data. Shape: (batch_size, seq_len).
+    :return: Length data. Shape: (batch_size,).
+    """
+    return mx.sym.sum(mx.sym.broadcast_not_equal(sequence_data, mx.sym.zeros((1,))), axis=1)
 
 
 def save_params(arg_params: Mapping[str, mx.nd.NDArray], fname: str,
@@ -228,7 +297,7 @@ def get_alignments(attention_matrix: np.ndarray, threshold: float = .9) -> Itera
     """
     Yields hard alignments from an attention_matrix (target_length, source_length)
     given a threshold.
-    
+
     :param attention_matrix: The attention matrix.
     :param threshold: The threshold for including an alignment link in the result.
     :return: Generator yielding strings of the form 0-0, 0-1, 2-1, 2-2, 3-4...
@@ -239,7 +308,7 @@ def get_alignments(attention_matrix: np.ndarray, threshold: float = .9) -> Itera
                 yield (src_idx, trg_idx)
 
 
-def average_arrays(arrays: List[mx.sym.NDArray]) -> mx.sym.NDArray:
+def average_arrays(arrays: List[mx.nd.NDArray]) -> mx.nd.NDArray:
     """
     Take a list of arrays of the same shape and take the element wise average.
 
@@ -248,7 +317,7 @@ def average_arrays(arrays: List[mx.sym.NDArray]) -> mx.sym.NDArray:
     """
     if len(arrays) == 1:
         return arrays[0]
-    assert all(arrays[0].shape == a.shape for a in arrays), "nd array shapes do not match"
+    check_condition(all(arrays[0].shape == a.shape for a in arrays), "nd array shapes do not match")
     new_array = mx.nd.zeros(arrays[0].shape, dtype=arrays[0].dtype, ctx=arrays[0].context)
     for a in arrays:
         new_array += a.as_in_context(new_array.context)
@@ -466,3 +535,50 @@ def namedtuple_with_defaults(typename, field_names, default_values: Mapping[str,
         prototype = T(*default_values)
     T.__new__.__defaults__ = tuple(prototype)
     return T
+
+
+def read_metrics_file(path: str) -> List[Dict[str, Any]]:
+    """
+    Reads lines metrics file and returns list of mappings of key and values.
+
+    :param path: File to read metric values from.
+    :return: Dictionary of metric names (e.g. perplexity-train) mapping to a list of values.
+    """
+    metrics = []
+    with open(path) as fin:
+        for i, line in enumerate(fin, 1):
+            fields = line.strip().split('\t')
+            checkpoint = int(fields[0])
+            check_condition(i == checkpoint,
+                            "Line (%d) and loaded checkpoint (%d) do not align." % (i, checkpoint))
+            metric = dict()
+            for field in fields[1:]:
+                key, value = field.split("=", 1)
+                metric[key] = float(value)
+            metrics.append(metric)
+    return metrics
+
+
+def write_metrics_file(metrics: List[Dict[str, Any]], path: str):
+    """
+    Write metrics data to tab-separated file.
+
+    :param metrics: metrics data.
+    :param path: Path to write to.
+    """
+    with open(path, 'w') as metrics_out:
+        for checkpoint, metric_dict in enumerate(metrics, 1):
+            metrics_str = "\t".join(["%s=%.6f" % (name, value) for name, value in sorted(metric_dict.items())])
+            metrics_out.write("%d\t%s\n" % (checkpoint, metrics_str))
+
+
+def get_validation_metric_points(model_path: str, metric: str):
+    """
+    Returns tuples of value and checkpoint for given metric from metrics file at model_path.
+    :param model_path: Model path containing .metrics file.
+    :param metric: Metric values to extract.
+    :return: List of tuples (value, checkpoint).
+    """
+    metrics_path = os.path.join(model_path, C.METRICS_NAME)
+    data = read_metrics_file(metrics_path)
+    return [(d['%s-val' % metric], cp) for cp, d in enumerate(data, 1)]

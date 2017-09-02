@@ -5,17 +5,21 @@
 # is located at
 #
 #     http://aws.amazon.com/apache2.0/
-# 
+#
 # or in the "license" file accompanying this file. This file is distributed on
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 # express or implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-import sockeye.utils
+import os
+import tempfile
+
 import mxnet as mx
 import numpy as np
-import random
 import pytest
+
+from sockeye import __version__
+from sockeye import utils
 
 
 def test_get_alignments():
@@ -27,60 +31,8 @@ def test_get_alignments():
                   (0.1, [(0, 1), (0, 2), (1, 0), (1, 1), (1, 2), (2, 0), (2, 2)])]
 
     for threshold, expected_alignment in test_cases:
-        alignment = list(sockeye.utils.get_alignments(attention_matrix, threshold=threshold))
+        alignment = list(utils.get_alignments(attention_matrix, threshold=threshold))
         assert alignment == expected_alignment
-
-
-def gaussian_vector(shape, return_symbol=False):
-    """
-    Generates random normal tensors (diagonal covariance)
-    
-    :param shape: shape of the tensor.
-    :param return_symbol: True if the result should be a Symbol, False if it should be an Numpy array.
-    :return: A gaussian tensor.
-    """
-    return mx.sym.random_normal(shape=shape) if return_symbol else np.random.normal(size=shape)
-
-
-def integer_vector(shape, max_value, return_symbol=False):
-    """
-    Generates a random positive integer tensor
-    
-    :param shape: shape of the tensor.
-    :param max_value: maximum integer value.
-    :param return_symbol: True if the result should be a Symbol, False if it should be an Numpy array.
-    :return: A random integer tensor.
-    """
-    return mx.sym.round(mx.sym.random_uniform(shape=shape) * max_value) if return_symbol \
-        else np.round(np.random.uniform(size=shape) * max_value)
-
-
-def uniform_vector(shape, min_value=0, max_value=1, return_symbol=False):
-    """
-    Generates a uniformly random tensor
-    
-    :param shape: shape of the tensor
-    :param min_value: minimum possible value
-    :param max_value: maximum possible value (exclusive)
-    :param return_symbol: True if the result should be a mx.sym.Symbol, False if it should be a Numpy array
-    :return: 
-    """
-    return mx.sym.random_uniform(low=min_value, high=max_value, shape=shape) if return_symbol \
-        else np.random.uniform(low=min_value, high=max_value, size=shape)
-
-
-def generate_random_sentence(vocab_size, max_len):
-    """
-    Generates a random "sentence" as a list of integers.
-
-    :param vocab_size: Number of words in the "vocabulary". Note that due to
-                       the inclusion of special words (BOS, EOS, UNK) this does *not*
-                       correspond to the maximum possible value.
-    :param max_len: maximum sentence length.
-    """
-    length = random.randint(1, max_len)
-    # Due to the special words, the actual words start at index 3 and go up to vocab_size+2
-    return [random.randint(3, vocab_size + 2) for _ in range(length)]
 
 
 device_params = [([-4, 3, 5], 6, [0, 1, 2, 3, 4, 5]),
@@ -91,13 +43,13 @@ device_params = [([-4, 3, 5], 6, [0, 1, 2, 3, 4, 5]),
 
 @pytest.mark.parametrize("requested_device_ids, num_gpus_available, expected", device_params)
 def test_expand_requested_device_ids(requested_device_ids, num_gpus_available, expected):
-    assert set(sockeye.utils._expand_requested_device_ids(requested_device_ids, num_gpus_available)) == set(expected)
+    assert set(utils._expand_requested_device_ids(requested_device_ids, num_gpus_available)) == set(expected)
 
 
 @pytest.mark.parametrize("requested_device_ids, num_gpus_available, expected", device_params)
 def test_aquire_gpus(tmpdir, requested_device_ids, num_gpus_available, expected):
-    with sockeye.utils.acquire_gpus(requested_device_ids, lock_dir=str(tmpdir),
-                                    num_gpus_available=num_gpus_available) as acquired_gpus:
+    with utils.acquire_gpus(requested_device_ids, lock_dir=str(tmpdir),
+                            num_gpus_available=num_gpus_available) as acquired_gpus:
         assert set(acquired_gpus) == set(expected)
 
 
@@ -115,14 +67,14 @@ device_params_expected_exception = [
 @pytest.mark.parametrize("requested_device_ids, num_gpus_available", device_params_expected_exception)
 def test_expand_requested_device_ids_exception(requested_device_ids, num_gpus_available):
     with pytest.raises(ValueError):
-        sockeye.utils._expand_requested_device_ids(requested_device_ids, num_gpus_available)
+        utils._expand_requested_device_ids(requested_device_ids, num_gpus_available)
 
 
 @pytest.mark.parametrize("requested_device_ids, num_gpus_available", device_params_expected_exception)
 def test_aquire_gpus_exception(tmpdir, requested_device_ids, num_gpus_available):
     with pytest.raises(ValueError):
-        with sockeye.utils.acquire_gpus(requested_device_ids, lock_dir=str(tmpdir),
-                                        num_gpus_available=num_gpus_available) as _:
+        with utils.acquire_gpus(requested_device_ids, lock_dir=str(tmpdir),
+                                num_gpus_available=num_gpus_available) as _:
             pass
 
 
@@ -134,9 +86,9 @@ device_params_1_locked = [([-4, 3, 5], 7, [0, 2, 3, 4, 5, 6]),
 @pytest.mark.parametrize("requested_device_ids, num_gpus_available, expected", device_params_1_locked)
 def test_aquire_gpus_1_locked(tmpdir, requested_device_ids, num_gpus_available, expected):
     gpu_1 = 1
-    with sockeye.utils.GpuFileLock([gpu_1], str(tmpdir)) as lock:
-        with sockeye.utils.acquire_gpus(requested_device_ids, lock_dir=str(tmpdir),
-                          num_gpus_available=num_gpus_available) as acquired_gpus:
+    with utils.GpuFileLock([gpu_1], str(tmpdir)) as lock:
+        with utils.acquire_gpus(requested_device_ids, lock_dir=str(tmpdir),
+                                num_gpus_available=num_gpus_available) as acquired_gpus:
             assert set(acquired_gpus) == set(expected)
 
 
@@ -144,7 +96,7 @@ def test_acquire_gpus_exception_propagation(tmpdir):
     raised_exception = RuntimeError("This exception should be propagated properly.")
     caught_exception = None
     try:
-        with sockeye.utils.acquire_gpus([-1, 4, -1], lock_dir=str(tmpdir), num_gpus_available=12) as _:
+        with utils.acquire_gpus([-1, 4, -1], lock_dir=str(tmpdir), num_gpus_available=12) as _:
             raise raised_exception
     except Exception as e:
         caught_exception = e
@@ -156,7 +108,7 @@ def test_gpu_file_lock_cleanup(tmpdir):
     candidates = [gpu_id]
 
     # Test that the lock files get created and clean up
-    with sockeye.utils.GpuFileLock(candidates, str(tmpdir)) as lock:
+    with utils.GpuFileLock(candidates, str(tmpdir)) as lock:
         assert lock == gpu_id
         assert tmpdir.join("sockeye.gpu0.lock").check(), "Lock file did not exist."
         assert not tmpdir.join("sockeye.gpu1.lock").check(), "Unrelated lock file did exist"
@@ -169,7 +121,7 @@ def test_gpu_file_lock_exception_propagation(tmpdir):
     raised_exception = RuntimeError("This exception should be propagated properly.")
     caught_exception = None
     try:
-        with sockeye.utils.GpuFileLock(gpu_ids, str(tmpdir)) as lock:
+        with utils.GpuFileLock(gpu_ids, str(tmpdir)) as lock:
             raise raised_exception
     except Exception as e:
         caught_exception = e
@@ -181,9 +133,9 @@ def test_gpu_file_lock_locking(tmpdir):
     gpu_id = 0
     candidates = [gpu_id]
 
-    with sockeye.utils.GpuFileLock(candidates, str(tmpdir)) as lock_inner:
+    with utils.GpuFileLock(candidates, str(tmpdir)) as lock_inner:
         assert lock_inner == 0
-        with sockeye.utils.GpuFileLock(candidates, str(tmpdir)) as lock_outer:
+        with utils.GpuFileLock(candidates, str(tmpdir)) as lock_outer:
             assert lock_outer is None
 
 
@@ -193,5 +145,69 @@ def test_gpu_file_lock_permission_exception(tmpdir):
         # remove permissions
         tmpdir.chmod(0)
 
-        with sockeye.utils.GpuFileLock([0], str(tmpdir)) as lock:
+        with utils.GpuFileLock([0], str(tmpdir)) as lock:
             assert False, "We expect to raise an exception when aquiring the lock and never reach this code."
+
+
+def test_check_condition_true():
+    utils.check_condition(1 == 1, "Nice")
+
+
+def test_check_condition_false():
+    with pytest.raises(utils.SockeyeError) as e:
+        utils.check_condition(1 == 2, "Wrong")
+    assert "Wrong" == str(e.value)
+
+
+@pytest.mark.parametrize("version_string,expected_version", [("1.0.3", ("1", "0", "3")),
+                                                             ("1.0.2.3", ("1", "0", "2.3"))])
+def test_parse_version(version_string, expected_version):
+    assert expected_version == utils.parse_version(version_string)
+
+
+def test_check_version_disregards_minor():
+    utils.check_version("1.6.0")
+
+
+def test_check_version_checks_major():
+    version = "1.7.1"
+    with pytest.raises(utils.SockeyeError) as e:
+        utils.check_version(version)
+    assert "Given major version (%s) does not match major code version (%s)" % (version, __version__)
+
+
+def test_average_arrays():
+    n = 4
+    shape = (12, 14)
+    arrays = [np.random.uniform(0, 1, (12, 14)) for _ in range(n)]
+    expected_average = np.zeros(shape)
+    for array in arrays:
+        expected_average += array
+    expected_average /= 4
+
+    mx_arrays = [mx.nd.array(a) for a in arrays]
+    assert np.isclose(utils.average_arrays(mx_arrays).asnumpy(), expected_average).all()
+
+    with pytest.raises(utils.SockeyeError) as e:
+        other_shape = (12, 13)
+        utils.average_arrays(mx_arrays + [mx.nd.zeros(other_shape)])
+    assert "nd array shapes do not match" == str(e.value)
+
+
+def test_save_and_load_params():
+    array = mx.nd.uniform(0, 1, (10, 12))
+    arg_params = {"array": array}
+    aux_params = {"array": array}
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "params")
+        utils.save_params(arg_params, path, aux_params=aux_params)
+        params = mx.nd.load(path)
+        assert len(params.keys()) == 2
+        assert "arg:array" in params.keys()
+        assert "aux:array" in params.keys()
+        loaded_arg_params, loaded_aux_params = utils.load_params(path)
+        assert "array" in loaded_arg_params
+        assert "array" in loaded_aux_params
+        assert np.isclose(loaded_arg_params['array'].asnumpy(), array.asnumpy()).all()
+        assert np.isclose(loaded_aux_params['array'].asnumpy(), array.asnumpy()).all()

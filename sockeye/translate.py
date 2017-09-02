@@ -5,7 +5,7 @@
 # is located at
 #
 #     http://aws.amazon.com/apache2.0/
-# 
+#
 # or in the "license" file accompanying this file. This file is distributed on
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 # express or implied. See the License for the specific language governing
@@ -22,26 +22,33 @@ from typing import Optional, Iterable, Tuple
 
 import mxnet as mx
 
+import sockeye
 import sockeye.arguments as arguments
+import sockeye.constants as C
 import sockeye.data_io
 import sockeye.inference
 import sockeye.output_handler
-from sockeye.log import setup_main_logger
+from sockeye.log import setup_main_logger, log_sockeye_version, log_mxnet_version
 from sockeye.utils import acquire_gpus, get_num_gpus
+from sockeye.utils import check_condition
 
 logger = setup_main_logger(__name__, file_logging=False)
 
 
 def main():
     params = argparse.ArgumentParser(description='Translate CLI')
-    arguments.add_inference_args(params)
-    arguments.add_device_args(params)
+    arguments.add_translate_cli_args(params)
     args = params.parse_args()
 
-    assert args.beam_size > 0, "Beam size must be 1 or greater."
-    if args.checkpoints is not None:
-        assert len(args.checkpoints) == len(args.models), "must provide checkpoints for each model"
+    if args.output is not None:
+        global logger
+        logger = setup_main_logger(__name__, file_logging=True, path="%s.%s" % (args.output, C.LOG_NAME))
 
+    if args.checkpoints is not None:
+        check_condition(len(args.checkpoints) == len(args.models), "must provide checkpoints for each model")
+
+    log_sockeye_version(logger)
+    log_mxnet_version(logger)
     logger.info("Command: %s", " ".join(sys.argv))
     logger.info("Arguments: %s", args)
 
@@ -52,14 +59,20 @@ def main():
     with ExitStack() as exit_stack:
         context = _setup_context(args, exit_stack)
 
+        bucket_source_width, bucket_target_width = args.bucket_width
         translator = sockeye.inference.Translator(context,
                                                   args.ensemble_mode,
+                                                  bucket_source_width,
+                                                  bucket_target_width,
+                                                  sockeye.inference.LengthPenalty(args.length_penalty_alpha,
+                                                                                  args.length_penalty_beta),
                                                   *sockeye.inference.load_models(context,
                                                                                  args.max_input_len,
                                                                                  args.beam_size,
                                                                                  args.models,
                                                                                  args.checkpoints,
-                                                                                 args.softmax_temperature))
+                                                                                 args.softmax_temperature,
+                                                                                 args.max_output_length_num_stds))
         read_and_translate(translator, output_handler, args.input)
 
 
@@ -74,6 +87,8 @@ def read_and_translate(translator: sockeye.inference.Translator, output_handler:
     """
 
     source_data = sys.stdin if source is None else sockeye.data_io.smart_open(source)
+
+    logger.info("Translating...")
 
     i, total_time = translate_lines(output_handler, source_data, translator)
 
@@ -98,15 +113,15 @@ def translate_lines(output_handler: sockeye.output_handler.OutputHandler, source
     i = 0
     total_time = 0.0
     for i, line in enumerate(source_data, 1):
+        tic = time.time()
         trans_input = translator.make_input(i, line)
         logger.debug(" IN: %s", trans_input)
-        tic = time.time()
         trans_output = translator.translate(trans_input)
         trans_wall_time = time.time() - tic
         total_time += trans_wall_time
         logger.debug("OUT: %s", trans_output)
         logger.debug("OUT: time=%.2f", trans_wall_time)
-        output_handler.handle(trans_input, trans_output)
+        output_handler.handle(trans_input, trans_output, trans_wall_time)
     return i, total_time
 
 
@@ -115,10 +130,11 @@ def _setup_context(args, exit_stack):
         context = mx.cpu()
     else:
         num_gpus = get_num_gpus()
-        assert num_gpus > 0, "No GPUs found, consider running on the CPU with --use-cpu " \
-                             "(note: check depends on nvidia-smi and this could also mean that the nvidia-smi " \
-                             "binary isn't on the path)."
-        assert len(args.device_ids) == 1, "cannot run on multiple devices for now"
+        check_condition(num_gpus >= 1,
+                        "No GPUs found, consider running on the CPU with --use-cpu "
+                        "(note: check depends on nvidia-smi and this could also mean that the nvidia-smi "
+                        "binary isn't on the path).")
+        check_condition(len(args.device_ids) == 1, "cannot run on multiple devices for now")
         gpu_id = args.device_ids[0]
         if args.disable_device_locking:
             # without locking and a negative device id we just take the first device

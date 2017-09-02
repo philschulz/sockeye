@@ -16,7 +16,7 @@ import mxnet as mx
 import numpy as np
 import pytest
 import sockeye.coverage
-from test.test_utils import gaussian_vector, integer_vector, uniform_vector
+from test.common import gaussian_vector, integer_vector, uniform_vector
 
 activation_types = ["tanh", "sigmoid", "relu", "softrelu"]
 
@@ -42,7 +42,8 @@ def test_gru_coverage():
 
 
 def _test_activation_coverage(act_type):
-    encoder_num_hidden, decoder_num_hidden, coverage_num_hidden, source_seq_len, batch_size = 5, 5, 2, 10, 4
+    config_coverage = sockeye.coverage.CoverageConfig(type=act_type, num_hidden=2, layer_normalization=False)
+    encoder_num_hidden, decoder_num_hidden, source_seq_len, batch_size = 5, 5, 10, 4
     # source: (batch_size, source_seq_len, encoder_num_hidden)
     source = mx.sym.Variable("source")
     # source_length: (batch_size,)
@@ -57,14 +58,15 @@ def _test_activation_coverage(act_type):
     source_length_shape = (batch_size,)
     prev_hidden_shape = (batch_size, decoder_num_hidden)
     attention_scores_shape = (batch_size, source_seq_len, 1)
-    prev_coverage_shape = (batch_size, source_seq_len, coverage_num_hidden)
+    prev_coverage_shape = (batch_size, source_seq_len, config_coverage.num_hidden)
     source_data = gaussian_vector(shape=source_shape)
     source_length_data = integer_vector(shape=source_length_shape, max_value=source_seq_len)
     prev_hidden_data = gaussian_vector(shape=prev_hidden_shape)
     prev_coverage_data = gaussian_vector(shape=prev_coverage_shape)
     attention_scores_data = uniform_vector(shape=attention_scores_shape)
     attention_scores_data = attention_scores_data / np.sum(attention_scores_data)
-    coverage = sockeye.coverage.get_coverage(coverage_type=act_type, coverage_num_hidden=coverage_num_hidden)
+
+    coverage = sockeye.coverage.get_coverage(config_coverage)
     coverage_func = coverage.on(source, source_length, source_seq_len)
     updated_coverage = coverage_func(prev_hidden, attention_scores, prev_coverage)
     executor = updated_coverage.simple_bind(ctx=mx.cpu(),
@@ -81,14 +83,15 @@ def _test_activation_coverage(act_type):
     result = executor.forward()
     # this is needed to modulate the 0 input. The output changes according to the activation type used.
     activation = mx.sym.Activation(name="activation", act_type=act_type)
-    modulated = activation.eval(ctx=mx.cpu(), activation_data=mx.nd.zeros((1,)))[0].asnumpy()
+    modulated = activation.eval(ctx=mx.cpu(), activation_data=mx.nd.zeros((1,1)))[0].asnumpy()
     new_coverage = result[0].asnumpy()
     assert new_coverage.shape == prev_coverage_shape
     assert (np.sum(np.sum(new_coverage == modulated, axis=2) != 0, axis=1) == source_length_data).all()
 
 
 def _test_gru_coverage():
-    encoder_num_hidden, decoder_num_hidden, coverage_num_hidden, source_seq_len, batch_size = 5, 5, 2, 10, 4
+    config_coverage = sockeye.coverage.CoverageConfig(type="gru", num_hidden=2, layer_normalization=False)
+    encoder_num_hidden, decoder_num_hidden, source_seq_len, batch_size = 5, 5, 10, 4
     # source: (batch_size, source_seq_len, encoder_num_hidden)
     source = mx.sym.Variable("source")
     # source_length: (batch_size,)
@@ -103,14 +106,14 @@ def _test_gru_coverage():
     source_length_shape = (batch_size,)
     prev_hidden_shape = (batch_size, decoder_num_hidden)
     attention_scores_shape = (batch_size, source_seq_len)
-    prev_coverage_shape = (batch_size, source_seq_len, coverage_num_hidden)
+    prev_coverage_shape = (batch_size, source_seq_len, config_coverage.num_hidden)
     source_data = gaussian_vector(shape=source_shape)
     source_length_data = integer_vector(shape=source_length_shape, max_value=source_seq_len)
     prev_hidden_data = gaussian_vector(shape=prev_hidden_shape)
     prev_coverage_data = gaussian_vector(shape=prev_coverage_shape)
     attention_scores_data = uniform_vector(shape=attention_scores_shape)
     attention_scores_data = attention_scores_data / np.sum(attention_scores_data)
-    coverage = sockeye.coverage.get_coverage(coverage_type="gru", coverage_num_hidden=coverage_num_hidden)
+    coverage = sockeye.coverage.get_coverage(config_coverage)
     coverage_func = coverage.on(source, source_length, source_seq_len)
     updated_coverage = coverage_func(prev_hidden, attention_scores, prev_coverage)
     executor = updated_coverage.simple_bind(ctx=mx.cpu(),
